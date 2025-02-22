@@ -64,12 +64,13 @@ def recognise():
     body = {
         'config': {
             'encoding': 'SPEEX_WITH_HEADER_BYTE',
-            'language_code': "de-DE",
+            'language_code': "en-US",
+            "alternativeLanguageCodes": ["de-DE"],
             'sample_rate_hertz': 16000,
             'max_alternatives': 1,
             'enableAutomaticPunctuation': True,
             'enableSpokenPunctuation': True,
-            'model': get_model_for_lang("de-DE"),
+            'model': get_model_for_lang("en-US"),
             # 'metadata': {
             #     'interaction_type': 'DICTATION',
             #     'microphone_distance': 'NEARFIELD',
@@ -79,7 +80,7 @@ def recognise():
             'content': base64.b64encode(b''.join((struct.pack('B', len(x)) + x for x in chunks))).decode('utf-8'),
         },
     }
-    result = requests.post(f'https://speech.googleapis.com/v1/speech:recognize?key={API_KEY}', json=body)
+    result = requests.post(f'https://speech.googleapis.com/v1p1beta1/speech:recognize?key={API_KEY}', json=body)
     result.raise_for_status()
 
     words = []
