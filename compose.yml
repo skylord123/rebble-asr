@@ -1,0 +1,10 @@
+services:
+  app:
+    container_name: rebble-asr
+    build: .
+    ports:
+      - "9039:9039"
+    restart: always
+    environment:
+      - SPEECH_API_KEY=${SPEECH_API_KEY}
+      - PORT=9039

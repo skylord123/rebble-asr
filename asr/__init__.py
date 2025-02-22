@@ -13,7 +13,7 @@ from flask import Flask, request, Response, abort
 
 app = Flask(__name__)
 
-AUTH_URL = "https://auth.rebble.io"
+#AUTH_URL = "https://auth.rebble.io"
 API_KEY = os.environ['SPEECH_API_KEY']
 
 
@@ -52,11 +52,11 @@ def heartbeat():
 def recognise():
     stream = request.stream
 
-    access_token, lang = request.host.split('.', 1)[0].split('-', 1)
+    #access_token, lang = request.host.split('.', 1)[0].split('-', 1)
 
-    auth_req = requests.get(f"{AUTH_URL}/api/v1/me/token", headers={'Authorization': f"Bearer {access_token}"})
-    if not auth_req.ok:
-        abort(401)
+    #auth_req = requests.get(f"{AUTH_URL}/api/v1/me/token", headers={'Authorization': f"Bearer {access_token}"})
+    #if not auth_req.ok:
+    #    abort(401)
 
     chunks = iter(list(parse_chunks(stream)))
     content = next(chunks).decode('utf-8')
@@ -64,12 +64,12 @@ def recognise():
     body = {
         'config': {
             'encoding': 'SPEEX_WITH_HEADER_BYTE',
-            'language_code': lang,
+            'language_code': "de-DE",
             'sample_rate_hertz': 16000,
             'max_alternatives': 1,
             'enableAutomaticPunctuation': True,
             'enableSpokenPunctuation': True,
-            'model': get_model_for_lang(lang),
+            'model': get_model_for_lang("de-DE"),
             # 'metadata': {
             #     'interaction_type': 'DICTATION',
             #     'microphone_distance': 'NEARFIELD',
