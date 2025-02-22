@@ -64,7 +64,7 @@ def recognise():
     for chunk in chunks:
         decoded = decoder.decode(chunk)
         # Boosting the audio volume
-        decoded = audioop.mul(decoded, 2, 10)
+        decoded = audioop.mul(decoded, 2, 7)
         audio = AudioSegment(decoded, sample_width=2, frame_rate=16000, channels=1)
         full_audio += audio
 
@@ -99,10 +99,10 @@ def recognise():
 
     except requests.exceptions.RequestException as e:
         print(f"Error: {e}")
-    print(f"[DEBUG] transcription received: {transcription}")
+    #print(f"[DEBUG] transcription received: {transcription}")
 
     transcript = transcription.get("text", "")
-    print(f"[DEBUG] Transcript: {transcript}")
+    #print(f"[DEBUG] Transcript: {transcript}")
     words = []
     for word in transcript.split():
         words.append({
@@ -121,7 +121,7 @@ def recognise():
         words[0]['word'] += '\\*no-space-before'
         words[0]['word'] = words[0]['word'][0].upper() + words[0]['word'][1:]
         payload = json.dumps({'words': [words]})
-        print(f"[DEBUG] Payload for QueryResult: {payload}")
+        #print(f"[DEBUG] Payload for QueryResult: {payload}")
     else:
         response_part.add_header('Content-Disposition', 'form-data; name="QueryRetry"')
         payload = json.dumps({
@@ -129,16 +129,16 @@ def recognise():
             "Name": "AUDIO_INFO",
             "Prompt": "Sorry, speech not recognized. Please try again."
         })
-        print(f"[DEBUG] Payload for QueryRetry: {payload}")
+        #print(f"[DEBUG] Payload for QueryRetry: {payload}")
 
     response_part.set_payload(payload)
     parts.attach(response_part)
 
     parts.set_boundary('--Nuance_NMSP_vutc5w1XobDdefsYG3wq')
     response_text = '\r\n' + parts.as_string().split("\n", 3)[3].replace('\n', '\r\n')
-    print(f"[DEBUG] Final response text prepared with boundary: {parts.get_boundary()}")
+    #print(f"[DEBUG] Final response text prepared with boundary: {parts.get_boundary()}")
     response = Response(response_text)
     response.headers['Content-Type'] = f'multipart/form-data; boundary={parts.get_boundary()}'
-    print("[DEBUG] Sending response")
+    #print("[DEBUG] Sending response")
     return response
 
