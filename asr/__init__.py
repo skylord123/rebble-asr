@@ -18,7 +18,7 @@ decoder = SpeexDecoder(1)
 app = Flask(__name__)
 
 #AUTH_URL = "https://auth.rebble.io"
-API_KEY = os.environ['GROQ_API_KEY']
+API_KEY = os.environ['ELEVENLABS_API_KEY']
 
 
 # We know gunicorn does this, but it doesn't *say* it does this, so we must signal it manually.
@@ -79,18 +79,19 @@ def recognise():
     transcription = None
 
     try:
-        # Create transcription via Groq API using requests instead of the groq module.
-        TRANSCIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+        # Create transcription via the ElevenLabs API
+        TRANSCIPTION_URL = "https://api.elevenlabs.io/v1/speech-to-text"
     
         files = {
             "file": ("audio.m4a", audio_bytes, "audio/mp4")
         }
         data = {
-            "model": "whisper-large-v3",
-            "response_format": "json"
+            "model_id": "scribe_v1",
+            "tag_audio_events": "false",
+            "timestamps_granularity": "none"
         }
         headers = {
-            "Authorization": f"Bearer {API_KEY}"
+            "xi-api-key": API_KEY
         }
     
         response_api = requests.post(TRANSCIPTION_URL, files=files, data=data, headers=headers)
@@ -100,7 +101,9 @@ def recognise():
     except requests.exceptions.RequestException as e:
         print(f"Error: {e}")
     #print(f"[DEBUG] transcription received: {transcription}")
-
+    if transcription is None:
+        abort
+    
     transcript = transcription.get("text", "")
     #print(f"[DEBUG] Transcript: {transcript}")
     words = []
