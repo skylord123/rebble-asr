@@ -13,7 +13,7 @@ Rebble ASR provides automatic speech recognition services for Pebble smartwatche
 |----------|-------------|---------|----------|
 | `ASR_API_KEY` | API key for ElevenLabs or Groq | None | Required for cloud providers |
 | `ASR_API_PROVIDER` | Speech recognition provider (`elevenlabs`, `groq`, or `vosk`) | `vosk` | No |
-| `PORT` | Port for the HTTP server | 8000 | No |
+| `PORT` | Port for the HTTP server | 9039 | No |
 
 ### ASR Providers
 
