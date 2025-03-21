@@ -7,9 +7,11 @@ import json
 import os
 import struct
 import requests
-from io import BytesIO
-from pydub import AudioSegment
+import io
+import wave
+import time
 import audioop
+import logging
 from speex import SpeexDecoder
 from flask import Flask, request, Response, abort
 
@@ -56,25 +58,28 @@ def heartbeat():
 def recognise():
     stream = request.stream
     
-    chunks = list(parse_chunks(stream))[3:]
-    full_audio = AudioSegment.empty()
+    chunks = list(parse_chunks(stream))
+    chunks = chunks[3:]
+    pcm_data = bytearray()
 
     if len(chunks) > 15:
         chunks = chunks[12:-3]
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
         decoded = decoder.decode(chunk)
         # Boosting the audio volume
         decoded = audioop.mul(decoded, 2, 7)
-        audio = AudioSegment(decoded, sample_width=2, frame_rate=16000, channels=1)
-        full_audio += audio
+        # Directly append decoded audio bytes
+        pcm_data.extend(decoded)
 
-    # After concatenating full_audio, export it as m4a in-memory.
-    out_buffer = BytesIO()
-    # Export using ffmpeg; ensure ffmpeg is installed in your container.
-    full_audio.export(out_buffer, format="mp4", codec="aac")
-    out_buffer.seek(0)
-    audio_bytes = out_buffer.getvalue()
-    #save the audio file
+    # Create WAV file in memory
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, 'wb') as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(pcm_data)
+
+    wav_buffer.seek(0)
 
     transcription = None
 
@@ -83,7 +88,7 @@ def recognise():
         TRANSCIPTION_URL = "https://api.elevenlabs.io/v1/speech-to-text"
     
         files = {
-            "file": ("audio.m4a", audio_bytes, "audio/mp4")
+            "file": ("audio.wav", wav_buffer, "audio/wav")
         }
         data = {
             "model_id": "scribe_v1",
