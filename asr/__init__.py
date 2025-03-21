@@ -19,12 +19,26 @@ from flask import Flask, request, Response, abort
 decoder = SpeexDecoder(1)
 app = Flask(__name__)
 
-#AUTH_URL = "https://auth.rebble.io"
-API_KEY = os.environ['ASR_API_KEY']
+# Get API key from environment, or None if not set
+API_KEY = os.environ.get('ASR_API_KEY')
+
+# Determine which provider to use
 try:
-    ASR_API_PROVIDER = os.environ.get('ASR_API_PROVIDER', 'groq')
+    # If API key is not set, use Vosk
+    if not API_KEY:
+        ASR_API_PROVIDER = 'vosk'
+        print("[INFO] No API key set, using Vosk for transcription")
+    else:
+        # Get the provider from environment and strip any quotes
+        ASR_API_PROVIDER = os.environ.get('ASR_API_PROVIDER', 'groq')
+        # Remove quotes if they exist
+        ASR_API_PROVIDER = ASR_API_PROVIDER.strip('"\'')
 except Exception:
-    ASR_API_PROVIDER = 'groq'
+    # Fallback to Vosk if there's any error in provider setup
+    ASR_API_PROVIDER = 'vosk'
+    print("[INFO] Error determining API provider, using Vosk as fallback")
+
+print(f"[INFO] Using ASR API provider: {ASR_API_PROVIDER}")
 
 
 # We know gunicorn does this, but it doesn't *say* it does this, so we must signal it manually.
@@ -104,6 +118,54 @@ def groq_transcribe(wav_buffer):
         print(f"Error: {e}")
         return None
 
+def vosk_transcribe(wav_buffer):
+    try:
+        from vosk import Model, KaldiRecognizer
+        import json
+        
+        # Check if model directory exists
+        model_path = os.environ.get('VOSK_MODEL_PATH', '/code/model')
+        if not os.path.exists(model_path):
+            print(f"[ERROR] Vosk model directory not found at {model_path}")
+            return None
+            
+        # Check for model files
+        model_files = os.listdir(model_path)
+        print(f"[INFO] Files in model directory: {model_files}")
+        required_files = ['am', 'conf', 'ivector']
+        missing_files = [f for f in required_files if not any(f in file for file in model_files)]
+        
+        if missing_files:
+            return None
+            
+        try:
+            # Initialize model
+            model = Model(model_path)
+            rec = KaldiRecognizer(model, 16000)
+            
+            # Reset buffer position
+            wav_buffer.seek(0)
+            # Read the WAV data
+            wav_data = wav_buffer.read()
+            
+            # Process audio
+            if len(wav_data) > 0:
+                if rec.AcceptWaveform(wav_data):
+                    result = json.loads(rec.Result())
+                else:
+                    result = json.loads(rec.FinalResult())
+                return result.get("text", "")
+            return ""
+            
+        except Exception as inner_e:
+            print(f"[ERROR] Failed to initialize Vosk model: {inner_e}")
+            return None
+            
+    except Exception as e:
+        print(f"[ERROR] Vosk transcription error: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return None
 
 @app.route('/heartbeat')
 def heartbeat():
@@ -139,17 +201,29 @@ def recognise():
     # Initialize transcript variable
     transcript = None
     
+    print(f"[DEBUG] Using ASR API provider: {ASR_API_PROVIDER}")
+
     if ASR_API_PROVIDER == 'elevenlabs':
-        transcript = elevenlabs_transcribe(wav_buffer)
-    elif ASR_API_PROVIDER == 'groq':  # Changed from 'if' to 'elif'
-        transcript = groq_transcribe(wav_buffer)
+        if not API_KEY:
+            print("[ERROR] ElevenLabs requires an API key, falling back to Vosk")
+            transcript = vosk_transcribe(wav_buffer)
+        else:
+            transcript = elevenlabs_transcribe(wav_buffer)
+    elif ASR_API_PROVIDER == 'groq':
+        if not API_KEY:
+            print("[ERROR] Groq requires an API key, falling back to Vosk")
+            transcript = vosk_transcribe(wav_buffer)
+        else:
+            transcript = groq_transcribe(wav_buffer)
+    elif ASR_API_PROVIDER == 'vosk':
+        transcript = vosk_transcribe(wav_buffer)
     else:
-        print(f"[ERROR] Invalid ASR API provider: {ASR_API_PROVIDER}")
-        abort(400)  # Added status code and actually call abort()
+        print(f"[ERROR] Invalid ASR API provider: {ASR_API_PROVIDER}, falling back to Vosk")
+        transcript = vosk_transcribe(wav_buffer)
     
     # Check if transcript is valid
     if transcript is None:
-        print("[ERROR] Transcription failed or returned None")
+        print("[ERROR] All transcription methods failed")
         abort(500)
         
     print(f"[DEBUG] Transcript: {transcript}")
