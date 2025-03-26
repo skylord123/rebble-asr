@@ -12,9 +12,35 @@ import wave
 import time
 import audioop
 import logging
+import asyncio
 from speex import SpeexDecoder
 from flask import Flask, request, Response, abort
 
+# Wyoming imports
+try:
+    import wyoming
+    from wyoming.asr import Transcribe, Transcript
+    from wyoming.audio import AudioChunk, AudioStart, AudioStop
+    from wyoming.client import AsyncTcpClient
+    HAS_WYOMING = True
+except ImportError:
+    HAS_WYOMING = False
+    print("[WARNING] Wyoming package not installed, wyoming-whisper provider will not be available")
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('rebble-asr')
+
+# Set up debug mode from environment variable
+DEBUG = os.environ.get('DEBUG', 'false').lower() in ('true', '1', 't', 'yes')
+if DEBUG:
+    logger.setLevel(logging.DEBUG)
+    logger.debug("Debug mode enabled")
+else:
+    logger.setLevel(logging.INFO)
 
 decoder = SpeexDecoder(1)
 app = Flask(__name__)
@@ -22,10 +48,19 @@ app = Flask(__name__)
 # Get API key from environment, or None if not set
 API_KEY = os.environ.get('ASR_API_KEY')
 
+# Get Wyoming connection details from environment
+WYOMING_HOST = os.environ.get('WYOMING_HOST', 'localhost')
+WYOMING_PORT = int(os.environ.get('WYOMING_PORT', '10300'))
+
+# Audio settings for Wyoming
+SAMPLE_RATE = 16000
+SAMPLE_WIDTH = 2
+SAMPLE_CHANNELS = 1
+
 # Determine which provider to use
 try:
     # If API key is not set, use Vosk
-    if not API_KEY:
+    if not API_KEY and os.environ.get('ASR_API_PROVIDER') != 'wyoming-whisper':
         ASR_API_PROVIDER = 'vosk'
         print("[INFO] No API key set, using Vosk for transcription")
     else:
@@ -38,7 +73,12 @@ except Exception:
     ASR_API_PROVIDER = 'vosk'
     print("[INFO] Error determining API provider, using Vosk as fallback")
 
-print(f"[INFO] Using ASR API provider: {ASR_API_PROVIDER}")
+logger.info(f"Using ASR API provider: {ASR_API_PROVIDER}")
+
+# Check if Wyoming is available when selected
+if ASR_API_PROVIDER == 'wyoming-whisper' and not HAS_WYOMING:
+    logger.warning("Wyoming-whisper selected but Wyoming package not installed, falling back to Vosk")
+    ASR_API_PROVIDER = 'vosk'
 
 
 # We know gunicorn does this, but it doesn't *say* it does this, so we must signal it manually.
@@ -69,9 +109,13 @@ def parse_chunks(stream):
 
 def elevenlabs_transcribe(wav_buffer):
     try:
+        if DEBUG:
+            logger.debug("Starting ElevenLabs transcription")
+            api_start_time = time.time()
+
         # Create transcription via the ElevenLabs API
         TRANSCIPTION_URL = "https://api.elevenlabs.io/v1/speech-to-text"
-    
+
         files = {
             "file": ("audio.wav", wav_buffer, "audio/wav")
         }
@@ -83,21 +127,30 @@ def elevenlabs_transcribe(wav_buffer):
         headers = {
             "xi-api-key": API_KEY
         }
-    
+
         response_api = requests.post(TRANSCIPTION_URL, files=files, data=data, headers=headers)
         response_api.raise_for_status()
         transcription = response_api.json()
+
+        if DEBUG:
+            api_time = time.time() - api_start_time
+            logger.debug(f"ElevenLabs API request completed in {api_time:.3f}s")
+
         return transcription.get("text", "")
 
     except requests.exceptions.RequestException as e:
-        print(f"Error: {e}")
+        logger.error(f"ElevenLabs transcription error: {e}")
         return None
 
 def groq_transcribe(wav_buffer):
     try:
+        if DEBUG:
+            logger.debug("Starting Groq transcription")
+            api_start_time = time.time()
+
         # Create transcription via the Groq API
         TRANSCIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-    
+
         files = {
             "file": ("audio.wav", wav_buffer, "audio/wav")
         }
@@ -108,63 +161,198 @@ def groq_transcribe(wav_buffer):
         headers = {
             "Authorization": f"Bearer {API_KEY}"
         }
-    
+
         response_api = requests.post(TRANSCIPTION_URL, files=files, data=data, headers=headers)
         response_api.raise_for_status()
         transcription = response_api.json()
+
+        if DEBUG:
+            api_time = time.time() - api_start_time
+            logger.debug(f"Groq API request completed in {api_time:.3f}s")
+
         return transcription.get("text", "")
 
     except requests.exceptions.RequestException as e:
-        print(f"Error: {e}")
+        logger.error(f"Groq transcription error: {e}")
+        return None
+
+def wyoming_whisper_transcribe(wav_buffer):
+    try:
+        if not HAS_WYOMING:
+            logger.error("Wyoming package not installed, cannot use wyoming-whisper")
+            return None
+
+        if DEBUG:
+            logger.debug(f"Starting Wyoming-whisper transcription")
+            logger.debug(f"Wyoming host: {WYOMING_HOST}, port: {WYOMING_PORT}")
+            wyoming_start_time = time.time()
+
+        # Reset buffer position and read the audio data
+        wav_buffer.seek(0)
+
+        # Parse the WAV file to get just the PCM data
+        with wave.open(wav_buffer, 'rb') as wav_file:
+            audio_data = wav_file.readframes(wav_file.getnframes())
+            if DEBUG:
+                logger.debug(f"Extracted {len(audio_data)} bytes of PCM data from WAV")
+
+        # Since we need to use asyncio, we need to create and run an async function
+        async def process_with_wyoming():
+            connection_start_time = time.time() if DEBUG else 0
+            try:
+                # Connect to Wyoming service
+                async with AsyncTcpClient(WYOMING_HOST, WYOMING_PORT) as client:
+                    if DEBUG:
+                        connection_time = time.time() - connection_start_time
+                        logger.debug(f"Connected to Wyoming service in {connection_time:.3f}s")
+
+                    # Set transcription language (using default as we don't have language info)
+                    await client.write_event(Transcribe(language=None).event())
+
+                    # Begin audio stream
+                    await client.write_event(
+                        AudioStart(
+                            rate=SAMPLE_RATE,
+                            width=SAMPLE_WIDTH,
+                            channels=SAMPLE_CHANNELS,
+                        ).event()
+                    )
+
+                    if DEBUG:
+                        logger.debug(f"Sending {len(audio_data)} bytes to Wyoming service")
+
+                    # Send audio data
+                    chunk = AudioChunk(
+                        rate=SAMPLE_RATE,
+                        width=SAMPLE_WIDTH,
+                        channels=SAMPLE_CHANNELS,
+                        audio=audio_data,
+                    )
+                    await client.write_event(chunk.event())
+
+                    # End audio stream
+                    await client.write_event(AudioStop().event())
+
+                    if DEBUG:
+                        logger.debug("Waiting for transcription result")
+
+                    # Wait for transcription result
+                    while True:
+                        event = await client.read_event()
+                        if event is None:
+                            logger.error("Wyoming connection lost")
+                            return None
+
+                        if Transcript.is_type(event.type):
+                            transcript = Transcript.from_event(event)
+                            if DEBUG:
+                                logger.debug(f"Received transcript from Wyoming service: '{transcript.text}'")
+                            return transcript.text
+            except Exception as e:
+                logger.error(f"Wyoming transcription error: {e}")
+                if DEBUG:
+                    import traceback
+                    logger.debug(traceback.format_exc())
+                return None
+
+        # Run the async function in an event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(process_with_wyoming())
+            if DEBUG:
+                wyoming_time = time.time() - wyoming_start_time
+                logger.debug(f"Wyoming-whisper transcription completed in {wyoming_time:.3f}s")
+            return result
+        finally:
+            loop.close()
+
+    except Exception as e:
+        logger.error(f"Wyoming-whisper transcription error: {e}")
+        if DEBUG:
+            import traceback
+            logger.debug(traceback.format_exc())
         return None
 
 def vosk_transcribe(wav_buffer):
     try:
+        if DEBUG:
+            logger.debug("Starting Vosk transcription")
+            vosk_start_time = time.time()
+
         from vosk import Model, KaldiRecognizer
         import json
-        
+
         # Check if model directory exists
         model_path = os.environ.get('VOSK_MODEL_PATH', '/code/model')
         if not os.path.exists(model_path):
-            print(f"[ERROR] Vosk model directory not found at {model_path}")
+            logger.error(f"Vosk model directory not found at {model_path}")
             return None
-            
+
         # Check for model files
         model_files = os.listdir(model_path)
-        print(f"[INFO] Files in model directory: {model_files}")
+        if DEBUG:
+            logger.debug(f"Files in model directory: {model_files}")
+
         required_files = ['am', 'conf', 'ivector']
         missing_files = [f for f in required_files if not any(f in file for file in model_files)]
-        
+
         if missing_files:
+            logger.error(f"Missing required Vosk model files: {missing_files}")
             return None
-            
+
         try:
             # Initialize model
+            model_init_start = time.time() if DEBUG else 0
             model = Model(model_path)
             rec = KaldiRecognizer(model, 16000)
-            
+
+            if DEBUG:
+                model_init_time = time.time() - model_init_start
+                logger.debug(f"Vosk model initialized in {model_init_time:.3f}s")
+
             # Reset buffer position
             wav_buffer.seek(0)
             # Read the WAV data
             wav_data = wav_buffer.read()
-            
+
+            if DEBUG:
+                logger.debug(f"Processing {len(wav_data)} bytes with Vosk")
+                process_start_time = time.time()
+
             # Process audio
             if len(wav_data) > 0:
                 if rec.AcceptWaveform(wav_data):
                     result = json.loads(rec.Result())
                 else:
                     result = json.loads(rec.FinalResult())
-                return result.get("text", "")
+
+                if DEBUG:
+                    process_time = time.time() - process_start_time
+                    logger.debug(f"Vosk processing completed in {process_time:.3f}s")
+                    logger.debug(f"Vosk result: {result}")
+
+                transcript = result.get("text", "")
+
+                if DEBUG:
+                    vosk_total_time = time.time() - vosk_start_time
+                    logger.debug(f"Vosk transcription completed in {vosk_total_time:.3f}s")
+
+                return transcript
             return ""
-            
+
         except Exception as inner_e:
-            print(f"[ERROR] Failed to initialize Vosk model: {inner_e}")
+            logger.error(f"Failed to initialize Vosk model: {inner_e}")
+            if DEBUG:
+                import traceback
+                logger.debug(traceback.format_exc())
             return None
-            
+
     except Exception as e:
-        print(f"[ERROR] Vosk transcription error: {e}")
-        import traceback
-        print(traceback.format_exc())
+        logger.error(f"Vosk transcription error: {e}")
+        if DEBUG:
+            import traceback
+            logger.debug(traceback.format_exc())
         return None
 
 @app.route('/heartbeat')
@@ -173,14 +361,26 @@ def heartbeat():
 
 @app.route('/NmspServlet/', methods=["POST"])
 def recognise():
+    # Track total processing time
+    start_time = time.time()
+
+    if DEBUG:
+        logger.debug(f"Received request from: {request.remote_addr}")
+        logger.debug(f"Request headers: {dict(request.headers)}")
+
     stream = request.stream
-    
+
     chunks = list(parse_chunks(stream))
     chunks = chunks[3:]
     pcm_data = bytearray()
 
     if len(chunks) > 15:
         chunks = chunks[12:-3]
+
+    if DEBUG:
+        logger.debug(f"Received {len(chunks)} audio chunks")
+
+    chunk_process_start = time.time()
     for i, chunk in enumerate(chunks):
         decoded = decoder.decode(chunk)
         # Boosting the audio volume
@@ -188,7 +388,13 @@ def recognise():
         # Directly append decoded audio bytes
         pcm_data.extend(decoded)
 
+    if DEBUG:
+        chunk_process_time = time.time() - chunk_process_start
+        logger.debug(f"Processed {len(chunks)} chunks in {chunk_process_time:.3f}s")
+        logger.debug(f"PCM data size: {len(pcm_data)} bytes")
+
     # Create WAV file in memory
+    wav_start_time = time.time()
     wav_buffer = io.BytesIO()
     with wave.open(wav_buffer, 'wb') as wav_file:
         wav_file.setnchannels(1)
@@ -197,36 +403,53 @@ def recognise():
         wav_file.writeframes(pcm_data)
 
     wav_buffer.seek(0)
+    wav_size = wav_buffer.getbuffer().nbytes
+
+    if DEBUG:
+        wav_process_time = time.time() - wav_start_time
+        logger.debug(f"Created WAV file in {wav_process_time:.3f}s")
+        logger.debug(f"WAV file size: {wav_size} bytes")
+        logger.debug(f"Audio duration: ~{len(pcm_data)/16000/2:.2f}s at 16kHz")
 
     # Initialize transcript variable
     transcript = None
-    
-    print(f"[DEBUG] Using ASR API provider: {ASR_API_PROVIDER}")
+
+    logger.info(f"Using ASR API provider: {ASR_API_PROVIDER}")
+
+    # Track transcription time
+    transcription_start = time.time()
 
     if ASR_API_PROVIDER == 'elevenlabs':
         if not API_KEY:
-            print("[ERROR] ElevenLabs requires an API key, falling back to Vosk")
+            logger.error("ElevenLabs requires an API key, falling back to Vosk")
             transcript = vosk_transcribe(wav_buffer)
         else:
             transcript = elevenlabs_transcribe(wav_buffer)
     elif ASR_API_PROVIDER == 'groq':
         if not API_KEY:
-            print("[ERROR] Groq requires an API key, falling back to Vosk")
+            logger.error("Groq requires an API key, falling back to Vosk")
             transcript = vosk_transcribe(wav_buffer)
         else:
             transcript = groq_transcribe(wav_buffer)
+    elif ASR_API_PROVIDER == 'wyoming-whisper':
+        transcript = wyoming_whisper_transcribe(wav_buffer)
+        if transcript is None:
+            logger.error("Wyoming-whisper transcription failed, falling back to Vosk")
+            transcript = vosk_transcribe(wav_buffer)
     elif ASR_API_PROVIDER == 'vosk':
         transcript = vosk_transcribe(wav_buffer)
     else:
-        print(f"[ERROR] Invalid ASR API provider: {ASR_API_PROVIDER}, falling back to Vosk")
+        logger.error(f"Invalid ASR API provider: {ASR_API_PROVIDER}, falling back to Vosk")
         transcript = vosk_transcribe(wav_buffer)
-    
+
+    transcription_time = time.time() - transcription_start
+
     # Check if transcript is valid
     if transcript is None:
-        print("[ERROR] All transcription methods failed")
+        logger.error("All transcription methods failed")
         abort(500)
-        
-    print(f"[DEBUG] Transcript: {transcript}")
+
+    logger.info(f"Transcript: '{transcript}' (took {transcription_time:.3f}s)")
     words = []
     for word in transcript.split():
         words.append({
@@ -260,9 +483,17 @@ def recognise():
 
     parts.set_boundary('--Nuance_NMSP_vutc5w1XobDdefsYG3wq')
     response_text = '\r\n' + parts.as_string().split("\n", 3)[3].replace('\n', '\r\n')
-    #print(f"[DEBUG] Final response text prepared with boundary: {parts.get_boundary()}")
+    if DEBUG:
+        logger.debug(f"Final response text prepared with boundary: {parts.get_boundary()}")
+
     response = Response(response_text)
     response.headers['Content-Type'] = f'multipart/form-data; boundary={parts.get_boundary()}'
-    #print("[DEBUG] Sending response")
-    return response
 
+    # Log total processing time
+    total_time = time.time() - start_time
+    logger.info(f"Total processing time: {total_time:.3f}s")
+
+    if DEBUG:
+        logger.debug("Sending response")
+
+    return response

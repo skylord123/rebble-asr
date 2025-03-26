@@ -3,3 +3,4 @@ gevent==24.11.1
 gunicorn==23.0.0
 git+https://github.com/jplexer/pyspeex.git
 requests==2.32.3
+wyoming==1.5.4

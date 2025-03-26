@@ -3,9 +3,12 @@ services:
     container_name: rebble-asr
     build: .
     ports:
-      - "9039:9039"
+      - "${PORT:-9999}:${PORT:-9999}"
     restart: always
     environment:
       - ASR_API_KEY=${ASR_API_KEY}
-      - ASR_API_PROVIDER=vosk # or groq or elevenlabs
-      - PORT=9039
+      - ASR_API_PROVIDER=wyoming-whisper # or groq or elevenlabs or wyoming-whisper
+      - PORT=${PORT:-9999}
+      - WYOMING_HOST=${WYOMING_HOST:-localhost}
+      - WYOMING_PORT=${WYOMING_PORT:-10300}
+      - DEBUG=${DEBUG:-false}
