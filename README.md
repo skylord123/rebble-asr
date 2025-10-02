@@ -13,10 +13,14 @@ Rebble ASR provides automatic speech recognition services for Pebble smartwatche
 |----------|-------------|---------|----------|
 | `ASR_API_KEY` | API key for ElevenLabs or Groq | None | Required for cloud providers |
 | `ASR_API_PROVIDER` | Speech recognition provider (`elevenlabs`, `groq`, `wyoming-whisper`, or `vosk`) | `vosk` | No |
-| `PORT` | Port for the HTTP server | 9039 | No |
+| `PORT` | Port for the HTTP server | `9039` | No |
 | `WYOMING_HOST` | Host address for Wyoming service | `localhost` | Required for wyoming-whisper |
 | `WYOMING_PORT` | Port for Wyoming service | `10300` | Required for wyoming-whisper |
+| `VOSK_MODEL_PATH` | Path to custom Vosk model directory | `/code/model` | No |
 | `DEBUG` | Enable detailed debug logging | `false` | No |
+| `SAVE_RECORDINGS` | Enable saving audio files and transcripts to disk | `false` | No |
+| `AUDIO_RECORDINGS_DIR` | Directory path for saved recordings | None | Required when `SAVE_RECORDINGS=true` |
+| `MAX_AUDIO_RECORDINGS` | Maximum number of recordings to keep (auto-rotation) | `10` | No |
 
 ### ASR Providers
 
@@ -69,6 +73,48 @@ Debug mode provides information about:
 - Audio processing metrics
 - Transcription timing and performance
 - Service communication details
+
+## Audio Recording
+
+Rebble ASR can save audio files and their transcriptions to disk for debugging, quality assurance, or analysis purposes.
+
+### Enable Audio Recording
+
+```bash
+export SAVE_RECORDINGS=true
+export AUDIO_RECORDINGS_DIR=/path/to/recordings
+export MAX_AUDIO_RECORDINGS=10  # Optional, defaults to 10
+```
+
+### How It Works
+
+When enabled, each transcription request will save:
+- **WAV file**: The audio data sent for transcription (e.g., `recording_20251002_143022.wav`)
+- **TXT file**: The transcribed text (e.g., `recording_20251002_143022.txt`)
+
+Files are automatically rotated to keep only the most recent recordings based on `MAX_AUDIO_RECORDINGS`.
+
+### Docker Setup
+
+When using Docker Compose, map a host directory to persist recordings:
+
+```yaml
+volumes:
+  - ./recordings:/recordings
+```
+
+Then set the environment variable to the container path:
+
+```bash
+export AUDIO_RECORDINGS_DIR=/recordings
+```
+
+### Use Cases
+
+- **Debugging**: Analyze failed or incorrect transcriptions
+- **Quality Assurance**: Review transcription accuracy
+- **Model Training**: Collect real-world audio samples
+- **Troubleshooting**: Identify issues with audio quality or format
 
 ## Fallback Behavior
 

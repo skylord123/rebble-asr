@@ -13,6 +13,7 @@ import time
 import audioop
 import logging
 import asyncio
+from datetime import datetime
 from speex import SpeexDecoder
 from flask import Flask, request, Response, abort
 
@@ -52,6 +53,11 @@ API_KEY = os.environ.get('ASR_API_KEY')
 WYOMING_HOST = os.environ.get('WYOMING_HOST', 'localhost')
 WYOMING_PORT = int(os.environ.get('WYOMING_PORT', '10300'))
 
+# Audio recording configuration
+SAVE_RECORDINGS = os.environ.get('SAVE_RECORDINGS', 'false').lower() in ('true', '1', 't', 'yes')
+AUDIO_RECORDINGS_DIR = os.environ.get('AUDIO_RECORDINGS_DIR')
+MAX_AUDIO_RECORDINGS = int(os.environ.get('MAX_AUDIO_RECORDINGS', '10'))
+
 # Audio settings for Wyoming
 SAMPLE_RATE = 16000
 SAMPLE_WIDTH = 2
@@ -79,6 +85,22 @@ logger.info(f"Using ASR API provider: {ASR_API_PROVIDER}")
 if ASR_API_PROVIDER == 'wyoming-whisper' and not HAS_WYOMING:
     logger.warning("Wyoming-whisper selected but Wyoming package not installed, falling back to Vosk")
     ASR_API_PROVIDER = 'vosk'
+
+# Validate and initialize audio recording configuration
+if SAVE_RECORDINGS:
+    if not AUDIO_RECORDINGS_DIR:
+        logger.warning("SAVE_RECORDINGS is enabled but AUDIO_RECORDINGS_DIR is not set. Disabling audio recording.")
+        SAVE_RECORDINGS = False
+    else:
+        try:
+            os.makedirs(AUDIO_RECORDINGS_DIR, exist_ok=True)
+            logger.info(f"Audio recording enabled. Saving to: {AUDIO_RECORDINGS_DIR} (max: {MAX_AUDIO_RECORDINGS} files)")
+        except (OSError, PermissionError) as e:
+            logger.error(f"Failed to create audio recordings directory '{AUDIO_RECORDINGS_DIR}': {e}")
+            logger.error("Disabling audio recording.")
+            SAVE_RECORDINGS = False
+else:
+    logger.info("Audio recording disabled")
 
 
 # We know gunicorn does this, but it doesn't *say* it does this, so we must signal it manually.
@@ -355,6 +377,98 @@ def vosk_transcribe(wav_buffer):
             logger.debug(traceback.format_exc())
         return None
 
+def save_audio_recording(wav_buffer, transcript):
+    """
+    Save audio recording and transcript to disk with automatic rotation.
+
+    Args:
+        wav_buffer: BytesIO object containing the WAV file
+        transcript: The transcribed text string
+    """
+    try:
+        # Generate timestamp-based filename
+        timestamp = datetime.now().strftime('recording_%Y%m%d_%H%M%S')
+        wav_filename = f"{timestamp}.wav"
+        txt_filename = f"{timestamp}.txt"
+
+        wav_path = os.path.join(AUDIO_RECORDINGS_DIR, wav_filename)
+        txt_path = os.path.join(AUDIO_RECORDINGS_DIR, txt_filename)
+
+        # Save WAV file
+        try:
+            wav_buffer.seek(0)
+            with open(wav_path, 'wb') as f:
+                f.write(wav_buffer.read())
+
+            if DEBUG:
+                wav_size = os.path.getsize(wav_path)
+                logger.debug(f"Saved audio recording: {wav_path} ({wav_size} bytes)")
+        except (IOError, OSError) as e:
+            logger.error(f"Failed to save WAV file '{wav_path}': {e}")
+            return
+
+        # Save transcript file
+        try:
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(transcript)
+
+            if DEBUG:
+                logger.debug(f"Saved transcript: {txt_path}")
+        except (IOError, OSError) as e:
+            logger.error(f"Failed to save transcript file '{txt_path}': {e}")
+
+        # Rotate old recordings if limit exceeded
+        try:
+            # Get all WAV files sorted by modification time (oldest first)
+            wav_files = []
+            for filename in os.listdir(AUDIO_RECORDINGS_DIR):
+                if filename.endswith('.wav'):
+                    filepath = os.path.join(AUDIO_RECORDINGS_DIR, filename)
+                    wav_files.append((filepath, os.path.getmtime(filepath)))
+
+            # Sort by modification time
+            wav_files.sort(key=lambda x: x[1])
+
+            # Delete oldest files if we exceed the limit
+            files_to_delete = len(wav_files) - MAX_AUDIO_RECORDINGS
+            if files_to_delete > 0:
+                for i in range(files_to_delete):
+                    old_wav_path = wav_files[i][0]
+                    old_txt_path = old_wav_path.replace('.wav', '.txt')
+
+                    # Delete WAV file
+                    try:
+                        os.remove(old_wav_path)
+                        if DEBUG:
+                            logger.debug(f"Deleted old recording: {old_wav_path}")
+                    except OSError as e:
+                        logger.error(f"Failed to delete old WAV file '{old_wav_path}': {e}")
+
+                    # Delete corresponding TXT file if it exists
+                    if os.path.exists(old_txt_path):
+                        try:
+                            os.remove(old_txt_path)
+                            if DEBUG:
+                                logger.debug(f"Deleted old transcript: {old_txt_path}")
+                        except OSError as e:
+                            logger.error(f"Failed to delete old TXT file '{old_txt_path}': {e}")
+
+            if DEBUG:
+                remaining_files = len(wav_files) - max(0, files_to_delete)
+                logger.debug(f"Audio recordings in directory: {remaining_files}/{MAX_AUDIO_RECORDINGS}")
+
+        except (IOError, OSError) as e:
+            logger.error(f"Failed to rotate old recordings: {e}")
+
+        # Reset buffer position for any subsequent use
+        wav_buffer.seek(0)
+
+    except Exception as e:
+        logger.error(f"Unexpected error in save_audio_recording: {e}")
+        if DEBUG:
+            import traceback
+            logger.debug(traceback.format_exc())
+
 @app.route('/heartbeat')
 def heartbeat():
     return 'asr'
@@ -450,6 +564,11 @@ def recognise():
         abort(500)
 
     logger.info(f"Transcript: '{transcript}' (took {transcription_time:.3f}s)")
+
+    # Save audio recording if enabled
+    if SAVE_RECORDINGS and AUDIO_RECORDINGS_DIR:
+        save_audio_recording(wav_buffer, transcript)
+
     words = []
     for word in transcript.split():
         words.append({

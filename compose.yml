@@ -4,6 +4,8 @@ services:
     build: .
     ports:
       - "${PORT:-9999}:${PORT:-9999}"
+    volumes:
+      - ${AUDIO_DIR:-./recordings}:/recordings
     restart: always
     environment:
       - ASR_API_KEY=${ASR_API_KEY}
@@ -12,3 +14,6 @@ services:
       - WYOMING_HOST=${WYOMING_HOST:-localhost}
       - WYOMING_PORT=${WYOMING_PORT:-10300}
       - DEBUG=${DEBUG:-false}
+      - SAVE_RECORDINGS=${SAVE_RECORDINGS:-false}
+      - AUDIO_RECORDINGS_DIR=${AUDIO_RECORDINGS_DIR:-/recordings}
+      - MAX_AUDIO_RECORDINGS=${MAX_AUDIO_RECORDINGS:-10}
